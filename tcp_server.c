@@ -1,83 +1,107 @@
 
+#if defined(_WIN32)
+#error This program does not support Windows.
+#endif
 
-
-#include <stdio.h>
+#include "chap03.h"
+#include <ctype.h>
 #include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
 
-#define PORT 8888
 
-int main(){
+int main() {
 
-    int sockCreate, ret;
-    struct sockaddr_in serverAddr;
+    printf("Configuring local address...\n");
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
 
-    int newSocket;
-    struct sockaddr_in newAddr;
+    struct addrinfo *bind_address;
+    getaddrinfo(0, "8080", &hints, &bind_address);
 
-    socklen_t addr_size;
 
-    char buffer[1024];
-    pid_t childpid;
-
-    sockCreate = socket(AF_INET, SOCK_STREAM, 0);
-    if(sockCreate < 0){
-        printf("[-]Error in connection.\n");
-        exit(1);
-    }
-    printf("[+]Server Socket is created.\n");
-
-    memset(&serverAddr, '\0', sizeof(serverAddr));
-    serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(PORT);
-    serverAddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-    ret = bind(sockCreate, (struct sockaddr*)&serverAddr, sizeof(serverAddr));
-    if(ret < 0){
-        printf("[-]Error in binding.\n");
-        exit(1);
-    }
-    printf("[+]Bind to port %d\n", 2323);
-
-    if(listen(sockCreate, 20) == 0){
-        printf("[+]Listening....\n");
-    }else{
-        printf("[-]Error in binding.\n");
+    printf("Creating socket...\n");
+    SOCKET socket_listen;
+    socket_listen = socket(bind_address->ai_family,
+            bind_address->ai_socktype, bind_address->ai_protocol);
+    if (!ISVALIDSOCKET(socket_listen)) {
+        fprintf(stderr, "socket() failed. (%d)\n", GETSOCKETERRNO());
+        return 1;
     }
 
 
-    while(1){
-        newSocket = accept(sockCreate, (struct sockaddr*)&newAddr, &addr_size);
-        if(newSocket < 0){
-            exit(1);
+    printf("Binding socket to local address...\n");
+    if (bind(socket_listen,
+                bind_address->ai_addr, bind_address->ai_addrlen)) {
+        fprintf(stderr, "bind() failed. (%d)\n", GETSOCKETERRNO());
+        return 1;
+    }
+    freeaddrinfo(bind_address);
+
+
+    printf("Listening...\n");
+    if (listen(socket_listen, 10) < 0) {
+        fprintf(stderr, "listen() failed. (%d)\n", GETSOCKETERRNO());
+        return 1;
+    }
+
+    printf("Waiting for connections...\n");
+
+    while(1) {
+
+        struct sockaddr_storage client_address;
+        socklen_t client_len = sizeof(client_address);
+        SOCKET socket_client = accept(socket_listen,
+                (struct sockaddr*) &client_address, &client_len);
+        if (!ISVALIDSOCKET(socket_client)) {
+            fprintf(stderr, "accept() failed. (%d)\n", GETSOCKETERRNO());
+            return 1;
         }
-        printf("Connection accepted from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
 
-        if((childpid = fork()) == 0){
-            close(sockCreate);
+        char address_buffer[100];
+        getnameinfo((struct sockaddr*)&client_address,
+                client_len, address_buffer, sizeof(address_buffer), 0, 0,
+                NI_NUMERICHOST);
+        printf("New connection from %s\n", address_buffer);
 
-            while(1){
-                recv(newSocket, buffer, 1024, 0);
-                if(strcmp(buffer, ":exit") == 0){
-                    printf("Disconnected from %s:%d\n", inet_ntoa(newAddr.sin_addr), ntohs(newAddr.sin_port));
-                    break;
-                }else{
-                    printf("Client: %s\n", buffer);
-                    send(newSocket, buffer, strlen(buffer), 0);
-                    bzero(buffer, sizeof(buffer));
+
+        int pid = fork();
+
+        if (pid == 0) { //child process
+            CLOSESOCKET(socket_listen);
+            while(1) {
+                char read[1024];
+                int bytes_received = recv(socket_client, read, 1024, 0);
+                if (bytes_received < 1) {
+                    CLOSESOCKET(socket_client);
+                    exit(0);
                 }
+
+                printf("%s",read);
+
+                int j;
+                for (j = 0; j < bytes_received; ++j)
+                    read[j] = toupper(read[j]);
+                send(socket_client, read, bytes_received, 0);
             }
         }
 
-    }
+        CLOSESOCKET(socket_client);
 
-    close(newSocket);
+    } //while(1)
 
+
+
+    printf("Closing listening socket...\n");
+    CLOSESOCKET(socket_listen);
+
+#if defined(_WIN32)
+    WSACleanup();
+#endif
+
+
+    printf("Finished.\n");
 
     return 0;
 }
